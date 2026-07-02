@@ -176,6 +176,7 @@ async function handleApi(req, res, url) {
       if (t) {
         if (typeof body.status === 'string') t.status = body.status
         if ('agent' in body) t.agent = body.agent
+        if (typeof body.text === 'string' && body.text.trim()) t.text = body.text.trim()
         await saveTasks(); broadcastTasks()
       }
       return json(res, { ok: true })

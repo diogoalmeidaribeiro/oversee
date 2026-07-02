@@ -6,15 +6,11 @@ import { fmt, ago, dur } from '../lib/format.js'
 
 const MENU_W = 152
 
-const STATE_LABEL = {
-  waiting: 'WAITING',
-  working: 'RUNNING',
-  shell: 'SHELL',
-  idle: 'IDLE',
-  dead: 'ENDED',
-}
-
-export function SessionCard({ s, onOpen, onKill, onDropTask, expanded, onToggle, showFolder = true }) {
+export function SessionCard({ s, onOpen, onKill, onDropTask, expanded, onToggle, showFolder = true, openTermName }) {
+  // When this session is already open in the side drawer, don't also mount an
+  // inline terminal for it — two live panes fight over the tmux window size and
+  // garble redraw-heavy TUIs (e.g. Claude's selector menus).
+  const openInDrawer = openTermName && openTermName === s.tmuxName
   const [git, setGit] = useState(null)
   const [menu, setMenu] = useState(null) // { top, left } in viewport coords, or null
   const [tab, setTab] = useState(s.hubOwned ? 'terminal' : 'ask') // expanded-body view
@@ -53,7 +49,6 @@ export function SessionCard({ s, onOpen, onKill, onDropTask, expanded, onToggle,
   }
   const finished = s.justFinished && s.state === 'idle'
   const stateClass = finished ? 'finished' : s.state
-  const label = finished ? 'DONE' : STATE_LABEL[s.state]
 
   // Metadata as icon + value chips.
   const metrics = []
@@ -85,20 +80,21 @@ export function SessionCard({ s, onOpen, onKill, onDropTask, expanded, onToggle,
         <div className="drop-hint">{s.hubOwned ? 'Drop to dispatch →' : 'Not a hub agent'}</div>
       )}
       <div className="card-head" onClick={() => { onToggle(); loadGit() }}>
-        <span className={`dot ${stateClass}`} />
         <div className="card-title">
           {showFolder && (
             <div className="folder">
-              {s.cwdName || s.cwd || '—'}
-              {s.hubOwned && <span className="tag hub">HUB</span>}
+              <span className="folder-name">{s.cwdName || s.cwd || '—'}</span>
+              <span className={`dot ${stateClass}`} />
             </div>
           )}
-          <div className="ai-title">{s.title || s.lastPrompt || '…'}</div>
+          <div className="ai-title">
+            <span className="ai-title-text">{s.title || s.lastPrompt || '…'}</span>
+            {!showFolder && <span className={`dot ${stateClass}`} />}
+          </div>
         </div>
         <button className="kebab" title="Actions" onClick={openMenu}>
           <Icon.kebab />
         </button>
-        <div className={`badge ${stateClass}`}>{label}</div>
         {menu && (
           <>
             <div className="menu-backdrop" onClick={(e) => { e.stopPropagation(); setMenu(null) }} />
@@ -151,7 +147,14 @@ export function SessionCard({ s, onOpen, onKill, onDropTask, expanded, onToggle,
           {s.hubOwned && tab === 'terminal' ? (
             <div className="inline-term">
               <div className="term-preview">
-                <TerminalPane tmuxName={s.tmuxName} fontSize={8} />
+                {openInDrawer ? (
+                  <button className="term-open-elsewhere" onClick={() => onOpen(s)}>
+                    <Icon.expand />
+                    Open in the side panel →
+                  </button>
+                ) : (
+                  <TerminalPane tmuxName={s.tmuxName} fontSize={8} />
+                )}
               </div>
               <form className="term-input" onSubmit={sendPrompt}>
                 <input

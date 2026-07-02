@@ -162,6 +162,14 @@ export default function App() {
           </div>
           <span className="sep" />
           <button
+            className="icon"
+            onClick={() => setExpanded(new Set())}
+            disabled={expanded.size === 0}
+            title={expanded.size ? `Minimize all cards (${expanded.size})` : 'No expanded cards'}
+          >
+            <Icon.collapse />
+          </button>
+          <button
             className={`icon${showKpi ? ' on' : ''}`}
             onClick={() => setShowKpi((v) => !v)}
             title={showKpi ? 'Hide stats strip' : 'Show stats strip'}
@@ -233,6 +241,7 @@ export default function App() {
                   onOpen={setOpenTerm}
                   onKill={handleKill}
                   onDropTask={dropTask}
+                  openTermName={openTerm?.tmuxName}
                 />
               ))
             ) : (
@@ -246,6 +255,7 @@ export default function App() {
                     onOpen={setOpenTerm}
                     onKill={handleKill}
                     onDropTask={dropTask}
+                    openTermName={openTerm?.tmuxName}
                   />
                 ))}
               </div>
