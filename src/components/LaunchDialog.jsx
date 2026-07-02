@@ -72,6 +72,15 @@ export function LaunchDialog({ onClose, onLaunched }) {
 
         {/* cd-style editable path */}
         <form className="path-bar" onSubmit={(e) => { e.preventDefault(); navigate(pathDraft) }}>
+          <button
+            type="button"
+            className="path-up"
+            title="Up one level"
+            disabled={!data?.parent}
+            onClick={() => data?.parent && navigate(data.parent)}
+          >
+            <Icon.levelUp />
+          </button>
           <span className="prompt-mark">❯</span>
           <input
             value={pathDraft}

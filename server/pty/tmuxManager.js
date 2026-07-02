@@ -126,9 +126,12 @@ export class TmuxManager {
     if (!this._streams) this._streams = new Map()
     let s = this._streams.get(name)
     if (!s) {
-      // Truncate + (re)start the pipe.
+      // Truncate + (re)start the pipe. No `-o`: that flag makes pipe-pane a
+      // toggle (open if none, else close), which races our explicit open/close
+      // — a quick reconnect or a hub restart with a lingering pipe would toggle
+      // streaming OFF and freeze the pane. Plain pipe-pane always (re)opens.
       try { fs.writeFileSync(file, '') } catch {}
-      tmux(['pipe-pane', '-o', '-t', name, `cat >> ${shellQuote(file)}`]).catch(() => {})
+      tmux(['pipe-pane', '-t', name, `cat >> ${shellQuote(file)}`]).catch(() => {})
       s = { file, offset: 0, refs: 0, listeners: new Set(), watcher: null }
       const pump = () => {
         try {
