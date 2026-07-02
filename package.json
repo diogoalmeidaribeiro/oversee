@@ -1,0 +1,29 @@
+{
+  "name": "oversee-sh",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A localhost hub to watch and drive all your Claude Code terminals at once.",
+  "scripts": {
+    "dev": "concurrently -k -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "node --watch server/index.js",
+    "dev:web": "vite",
+    "build": "vite build",
+    "start": "vite build && node server/index.js",
+    "mc": "npm start"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "node-notifier": "^10.0.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "vite": "^6.0.7",
+    "@xterm/xterm": "^5.5.0",
+    "@xterm/addon-fit": "^0.10.0"
+  }
+}
