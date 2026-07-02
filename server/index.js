@@ -341,15 +341,21 @@ async function attachPty(ws, url) {
   })
 
   // Seed the current screen once we know the client's size, so the dump matches
-  // its width. capture-pane joins lines with bare "\n"; convert to CRLF or xterm
-  // (convertEol:false) renders it as a diagonal staircase. Clear first for a
-  // clean paint.
+  // its width. We paint the visible pane from home (row 1), then place the cursor
+  // exactly where the program has it — otherwise xterm's cursor sits at the end
+  // of the dump and the program's next relative redraw (Ink moves the cursor up
+  // N lines and repaints) lands in the wrong place, garbling the screen.
+  // capture-pane joins lines with bare "\n"; convert to CRLF or xterm renders a
+  // diagonal staircase (convertEol:false).
   let seeded = false
   const seedNow = async () => {
     if (seeded || ws.readyState !== 1) return
     seeded = true
-    const seed = await tmux.capture(name)
-    if (seed && ws.readyState === 1) ws.send('\x1b[2J\x1b[H' + seed.replace(/\n/g, '\r\n'))
+    const [screen, cur] = await Promise.all([tmux.capture(name), tmux.cursor(name)])
+    if (ws.readyState !== 1) return
+    const body = screen.replace(/\n/g, '\r\n')
+    const place = `\x1b[${cur.y + 1};${cur.x + 1}H` // 1-based absolute cursor
+    ws.send('\x1b[2J\x1b[H' + body + place)
   }
 
   ws.on('message', async (raw) => {

@@ -344,6 +344,9 @@ main.layout { flex: 1; display: flex; flex-direction: column; overflow: hidden; 
 
 /* Terminal drawer ---------------------------------------------------------- */
 .drawer { flex: none; width: 44vw; max-width: 760px; position: relative; border-left: 1px solid var(--line); background: var(--bg); display: flex; flex-direction: column; overflow: hidden; }
+.drawer-resize { position: absolute; left: -3px; top: 0; bottom: 0; width: 7px; cursor: col-resize; z-index: 6; }
+.drawer-resize:hover { background: var(--text); opacity: .5; }
+.drawer-resize:active { background: var(--text); opacity: .9; }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 11px 14px; border-bottom: 1px solid var(--line); }
 .terminal-host { flex: 1; padding: 8px; overflow: hidden; }
 

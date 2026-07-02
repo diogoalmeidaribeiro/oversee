@@ -81,13 +81,28 @@ export class TmuxManager {
     }
   }
 
-  // Current screen contents (with colors) to seed a freshly-connected terminal.
+  // The visible screen (with colors) to seed a freshly-connected terminal. We
+  // capture ONLY the visible pane — not scrollback — so it maps 1:1 onto the
+  // client's rows and the cursor can be placed exactly where the program thinks
+  // it is (see seed()); dumping scrollback would leave xterm's cursor far from
+  // the program's, and its next relative redraw would land in the wrong place.
   async capture(name) {
     try {
-      const { stdout } = await tmux(['capture-pane', '-p', '-e', '-S', '-3000', '-t', name])
+      const { stdout } = await tmux(['capture-pane', '-p', '-e', '-t', name])
       return stdout
     } catch {
       return ''
+    }
+  }
+
+  // Where the program's cursor currently is (0-based col/row within the pane).
+  async cursor(name) {
+    try {
+      const { stdout } = await tmux(['display-message', '-p', '-t', name, '#{cursor_x},#{cursor_y}'])
+      const [x, y] = stdout.trim().split(',').map((n) => Number(n) || 0)
+      return { x, y }
+    } catch {
+      return { x: 0, y: 0 }
     }
   }
 

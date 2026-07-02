@@ -45,6 +45,7 @@ export default function App() {
   const [showKpi, setShowKpi] = usePersisted('mc.showKpi', true)
   const [showRail, setShowRail] = usePersisted('mc.showRail', true)
   const [sideTab, setSideTab] = usePersisted('mc.sideTab', 'inbox')
+  const [drawerWidth, setDrawerWidth] = usePersisted('mc.drawerWidth', 620)
   const [collapsed, setCollapsed] = useState(() => new Set())
   const [now, setNow] = useState(() => Date.now())
 
@@ -118,6 +119,26 @@ export default function App() {
       n.has(id) ? n.delete(id) : n.add(id)
       return n
     })
+
+  // Drag the drawer's left edge to resize it; the cards area (flex:1) reflows to
+  // fill whatever space is left.
+  const startDrawerResize = (e) => {
+    e.preventDefault()
+    const onMove = (ev) => {
+      const w = Math.min(Math.max(window.innerWidth - ev.clientX, 380), window.innerWidth - 440)
+      setDrawerWidth(w)
+    }
+    const onUp = () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      document.body.style.userSelect = ''
+      document.body.style.cursor = ''
+    }
+    document.body.style.userSelect = 'none'
+    document.body.style.cursor = 'col-resize'
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }
   const toggleCollapse = (cwd) =>
     setCollapsed((p) => {
       const n = new Set(p)
@@ -263,7 +284,8 @@ export default function App() {
           </div>
 
           {openSession && (
-            <aside className="drawer">
+            <aside className="drawer" style={{ width: drawerWidth, maxWidth: 'none' }}>
+              <div className="drawer-resize" onMouseDown={startDrawerResize} title="Drag to resize" />
               <Brackets />
               <div className="drawer-head">
                 <div>
