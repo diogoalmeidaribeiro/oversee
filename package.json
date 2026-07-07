@@ -15,7 +15,9 @@
     "mc": "npm start",
     "electron:dev": "concurrently -k -n server,web,app -c cyan,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"wait-on http://localhost:5173 && cross-env MC_DEV=1 electron .\"",
     "pack": "npm run build:ui && electron-builder --dir",
-    "dist": "npm run build:ui && electron-builder"
+    "dist": "npm run build:ui && electron-builder",
+    "landing:dev": "vite --config landing/vite.config.js",
+    "landing:build": "vite build --config landing/vite.config.js"
   },
   "dependencies": {
     "chokidar": "^3.6.0",
