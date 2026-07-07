@@ -3,14 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.cjs",
   "description": "A localhost hub to watch and drive all your Claude Code terminals at once.",
   "scripts": {
     "dev": "concurrently -k -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
     "dev:server": "node --watch server/index.js",
     "dev:web": "vite",
     "build": "vite build",
+    "build:ui": "vite build",
     "start": "vite build && node server/index.js",
-    "mc": "npm start"
+    "mc": "npm start",
+    "electron:dev": "concurrently -k -n server,web,app -c cyan,magenta,green \"npm:dev:server\" \"npm:dev:web\" \"wait-on http://localhost:5173 && cross-env MC_DEV=1 electron .\"",
+    "pack": "npm run build:ui && electron-builder --dir",
+    "dist": "npm run build:ui && electron-builder"
   },
   "dependencies": {
     "chokidar": "^3.6.0",
@@ -20,10 +25,45 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.4",
     "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "vite": "^6.0.7",
+    "wait-on": "^8.0.1",
     "@xterm/xterm": "^5.5.0",
     "@xterm/addon-fit": "^0.10.0"
+  },
+  "build": {
+    "appId": "sh.oversee.app",
+    "productName": "oversee.sh",
+    "npmRebuild": false,
+    "asar": true,
+    "asarUnpack": [
+      "**/node_modules/node-notifier/vendor/**"
+    ],
+    "files": [
+      "electron/**",
+      "server/**",
+      "dist/**",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "electron/main.cjs"
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.icns",
+      "identity": null
+    },
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    }
   }
 }

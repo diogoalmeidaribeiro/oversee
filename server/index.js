@@ -467,10 +467,17 @@ async function main() {
   await tmux.init()
   await loadTasks()
   await registry.start()
-  server.listen(config.port, () => {
-    console.log(`\n  ▸ oversee.sh server on http://localhost:${config.port}`)
+  // When launched by the Electron shell (MC_EPHEMERAL), bind an OS-assigned port
+  // on loopback and report it back to the parent — avoids fixed-port conflicts and
+  // keeps the app off the LAN. Standalone `npm start` still uses config.port (4600).
+  const port = process.env.MC_EPHEMERAL ? 0 : config.port
+  const host = process.env.MC_EPHEMERAL ? '127.0.0.1' : undefined
+  server.listen(port, host, () => {
+    const actual = server.address().port
+    console.log(`\n  ▸ oversee.sh server on http://localhost:${actual}`)
     console.log(`    tmux: ${tmux.available ? 'available (can launch sessions)' : 'NOT found — monitor-only mode'}`)
     console.log(`    UI:   ${fs.existsSync(distDir) ? 'built (open the URL above)' : 'run `npm run dev` for the dev UI on :5173'}\n`)
+    process.parentPort?.postMessage({ type: 'ready', port: actual })
   })
 }
 main().catch((e) => {
