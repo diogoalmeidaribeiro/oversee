@@ -1,10 +1,11 @@
 import path from 'node:path'
 import { config } from '../config.js'
 import { State } from '../state/engine.js'
+import { sendTelegram } from './telegram.js'
 
-// Native macOS notifications for the two transitions that matter, with anti-spam:
-// per-session cooldown, burst coalescing, and a startup grace so restarting the
-// hub never blasts you with "N sessions waiting".
+// Notifications for the two transitions that matter, delivered to every enabled
+// channel (native macOS + Telegram), with shared anti-spam: per-session cooldown,
+// burst coalescing, and a startup grace so restarting the hub never blasts you.
 
 let notifier = null
 try {
@@ -14,7 +15,9 @@ try {
 }
 
 export class Notifier {
-  constructor() {
+  // getTelegram() returns the current { enabled, token, chatId } or null.
+  constructor(getTelegram) {
+    this.getTelegram = getTelegram || (() => null)
     this.bootedAt = Date.now()
     this.lastSent = new Map() // key -> ts
     this.pending = []         // coalescing buffer
@@ -52,31 +55,50 @@ export class Notifier {
     this._flushTimer = null
     const batch = this.pending
     this.pending = []
-    if (!batch.length || !notifier) return
+    if (!batch.length) return
 
+    // Build the human notifications, then dispatch each to every channel.
+    const notes = []
     if (batch.length >= 3) {
       const waiting = batch.filter((b) => b.kind === 'waiting').length
       const finished = batch.filter((b) => b.kind === 'finished').length
       const parts = []
       if (waiting) parts.push(`${waiting} waiting`)
       if (finished) parts.push(`${finished} finished`)
-      this._send('oversee.sh', parts.join(' · ') || `${batch.length} updates`)
-      return
+      notes.push({ emoji: '🔔', title: 'oversee', message: parts.join(' · ') || `${batch.length} updates` })
+    } else {
+      for (const b of batch) {
+        if (b.kind === 'waiting') notes.push({ emoji: '🔴', title: 'Needs your input', message: b.name })
+        else if (b.kind === 'finished') notes.push({ emoji: '✅', title: 'Finished', message: `${b.name} is done` })
+        else if (b.kind === 'died') notes.push({ emoji: '⚫', title: 'Session ended', message: `${b.name} stopped unexpectedly` })
+      }
     }
-    for (const b of batch) {
-      if (b.kind === 'waiting') this._send('Needs your input', b.name)
-      else if (b.kind === 'finished') this._send('Finished', `${b.name} is done`)
-      else if (b.kind === 'died') this._send('Session ended', `${b.name} stopped unexpectedly`)
+
+    const tg = this.getTelegram?.()
+    for (const n of notes) {
+      this._sendNative(n.title, n.message)
+      this._sendTelegram(tg, n)
     }
   }
 
-  _send(title, message) {
+  _sendNative(title, message) {
+    if (!notifier) return
     try {
       notifier.notify({ title, message, sound: false, timeout: 6 })
     } catch {
       /* ignore */
     }
   }
+
+  _sendTelegram(tg, n) {
+    if (!tg || !tg.enabled || !tg.token || !tg.chatId) return
+    const text = `${n.emoji} <b>${esc(n.title)}</b>\n${esc(n.message)}`
+    sendTelegram(tg.token, tg.chatId, text).catch(() => {})
+  }
+}
+
+function esc(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 function shortCwd(cwd) {

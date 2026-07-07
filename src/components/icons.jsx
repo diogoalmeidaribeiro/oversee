@@ -102,6 +102,14 @@ export const Icon = {
       <circle cx="8" cy="12.7" r="1.15" fill="currentColor" stroke="none" />
     </Svg>
   ),
+  settings: () => (
+    <Svg>
+      <path {...P} d="M2.5 5h5.5" /><path {...P} d="M11 5h2.5" />
+      <circle {...P} cx="9.5" cy="5" r="1.6" />
+      <path {...P} d="M2.5 11h2.5" /><path {...P} d="M8 11h5.5" />
+      <circle {...P} cx="6.5" cy="11" r="1.6" />
+    </Svg>
+  ),
   trash: () => (
     <Svg>
       <path {...P} d="M3 4.6h10" />

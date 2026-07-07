@@ -357,7 +357,35 @@ main.layout { flex: 1; display: flex; flex-direction: column; overflow: hidden; 
 .cwd-input { width: 100%; margin-top: 14px; padding: 11px; border-radius: var(--radius); border: 1px solid var(--line); background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 12px; }
 .cwd-input:focus { outline: none; border-color: var(--red); }
 .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+.modal-actions .spacer { flex: 1; }
 .error { color: var(--red); font-size: 11px; margin-top: 10px; }
+
+/* Settings / notifications ------------------------------------------------- */
+.modal.settings { width: 460px; }
+.settings-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+.settings-head h3 { margin: 0; }
+.settings-sec { border: 1px solid var(--line-soft); padding: 16px; }
+.settings-row { display: flex; align-items: center; justify-content: space-between; }
+.tg-title { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 13px; font-weight: 600; letter-spacing: .3px; }
+.tg-title .ico { width: 14px; height: 14px; color: var(--run); }
+.settings-hint { color: var(--muted); font-size: 12px; line-height: 1.55; margin: 10px 0 14px; }
+.settings-hint code { font-family: var(--mono); color: var(--text); background: var(--panel-2); padding: 1px 4px; border: 1px solid var(--line-soft); }
+.settings-hint strong { color: var(--text); }
+.field { display: block; margin-top: 12px; }
+.field > span { display: block; font-family: var(--mono); font-size: 10.5px; letter-spacing: 1px; text-transform: uppercase; color: var(--faint); margin-bottom: 5px; }
+.field input { width: 100%; padding: 9px 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 12px; border-radius: var(--radius); }
+.field input:focus { outline: none; border-color: var(--muted); }
+.field-row { display: flex; gap: 8px; }
+.field-row input { flex: 1; }
+.settings-status { margin-top: 12px; font-family: var(--mono); font-size: 11.5px; line-height: 1.5; padding: 8px 10px; border: 1px solid var(--line-soft); }
+.settings-status.ok { color: var(--run); border-color: #14401f; }
+.settings-status.err { color: var(--red); border-color: #40201d; }
+.settings-status.info { color: var(--muted); }
+/* toggle switch */
+.toggle { position: relative; width: 38px; height: 21px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg); cursor: pointer; padding: 0; transition: background .15s, border-color .15s; }
+.toggle .knob { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: var(--faint); transition: transform .16s, background .16s; }
+.toggle.on { background: rgba(59,255,130,.15); border-color: var(--run); }
+.toggle.on .knob { transform: translateX(17px); background: var(--run); }
 
 /* Retro file explorer ------------------------------------------------------ */
 .modal.explorer { width: 620px; padding: 0; overflow: hidden; }

@@ -4,6 +4,7 @@ import { SessionCard } from './components/SessionCard.jsx'
 import { ProjectGroup } from './components/ProjectGroup.jsx'
 import { TerminalPane } from './components/TerminalPane.jsx'
 import { LaunchDialog } from './components/LaunchDialog.jsx'
+import { SettingsDialog } from './components/SettingsDialog.jsx'
 import { Brackets } from './components/Brackets.jsx'
 import { FleetOverview } from './components/FleetOverview.jsx'
 import { Sidebar } from './components/Sidebar.jsx'
@@ -39,6 +40,7 @@ export default function App() {
   const [expanded, setExpanded] = useState(() => new Set())
   const [openTerm, setOpenTerm] = useState(null)
   const [showLaunch, setShowLaunch] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
   const [confirmKill, setConfirmKill] = useState(null)
   const [muted, setMuted] = usePersisted('mc.muted', false)
   const [grouped, setGrouped] = usePersisted('mc.grouped', true)
@@ -227,6 +229,9 @@ export default function App() {
           <button className="icon" onClick={() => setMuted((m) => !m)} title={muted ? 'Sound off' : 'Sound on'}>
             {muted ? <Icon.bellOff /> : <Icon.bell />}
           </button>
+          <button className="icon" onClick={() => setShowSettings(true)} title="Notification settings">
+            <Icon.settings />
+          </button>
           <button
             className="primary"
             disabled={!snapshot.tmuxAvailable}
@@ -329,6 +334,8 @@ export default function App() {
           onLaunched={(info) => info?.name && setOpenTerm({ tmuxName: info.name, cwdName: info.cwd })}
         />
       )}
+
+      {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
 
       {confirmKill && (
         <ConfirmDialog

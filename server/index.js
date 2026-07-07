@@ -12,6 +12,7 @@ import { RegistryWatcher } from './registry/watcher.js'
 import { TranscriptStore } from './transcript/tailer.js'
 import { StateEngine, State } from './state/engine.js'
 import { Notifier } from './notify/notifier.js'
+import { sendTelegram, detectChatId, getBotInfo } from './notify/telegram.js'
 import { TmuxManager } from './pty/tmuxManager.js'
 import { gitDiffStat } from './git/diffStat.js'
 
@@ -21,8 +22,27 @@ const distDir = path.join(__dirname, '..', 'dist')
 const registry = new RegistryWatcher()
 const transcripts = new TranscriptStore()
 const engine = new StateEngine()
-const notifier = new Notifier()
 const tmux = new TmuxManager()
+
+// Persisted settings (notification channels, etc). Loaded on boot; the Notifier
+// reads the current Telegram config live via the getter below.
+const settingsFile = path.join(config.claudeDir, 'oversee-settings.json')
+let settings = { telegram: { enabled: false, token: '', chatId: '' } }
+async function loadSettings() {
+  try {
+    const obj = JSON.parse(await fsp.readFile(settingsFile, 'utf8'))
+    if (obj && typeof obj === 'object') settings = { ...settings, ...obj, telegram: { ...settings.telegram, ...obj.telegram } }
+  } catch { /* defaults */ }
+  // Environment overrides (handy for headless / CI).
+  if (process.env.MC_TG_TOKEN) settings.telegram.token = process.env.MC_TG_TOKEN
+  if (process.env.MC_TG_CHAT) settings.telegram.chatId = process.env.MC_TG_CHAT
+  if (process.env.MC_TG_TOKEN && process.env.MC_TG_CHAT) settings.telegram.enabled = true
+}
+async function saveSettings() {
+  try { await fsp.writeFile(settingsFile, JSON.stringify(settings, null, 2)) } catch {}
+}
+
+const notifier = new Notifier(() => settings.telegram)
 
 let latest = { sessions: [], tmuxAvailable: false, hubSessions: [] }
 const titleBySession = new Map()
@@ -216,6 +236,39 @@ async function handleApi(req, res, url) {
         : process.platform === 'win32' ? 'explorer' : 'xdg-open'
       await new Promise((resolve) => execFile(opener, [dir], () => resolve()))
       return json(res, { ok: true })
+    }
+
+    // Settings (notification channels). Returns the current config for the UI.
+    if (url.pathname === '/api/settings' && req.method === 'GET') {
+      return json(res, settings)
+    }
+    if (url.pathname === '/api/settings' && req.method === 'POST') {
+      const body = await readBody(req)
+      const tg = body?.telegram || {}
+      settings.telegram = {
+        enabled: !!tg.enabled,
+        token: typeof tg.token === 'string' ? tg.token.trim() : settings.telegram.token,
+        chatId: typeof tg.chatId === 'string' ? tg.chatId.trim() : settings.telegram.chatId,
+      }
+      await saveSettings()
+      return json(res, settings)
+    }
+
+    // Telegram helpers: auto-detect the chat id and send a test message. Uses the
+    // token/chatId from the request if given, else the saved ones.
+    if (url.pathname === '/api/telegram/detect' && req.method === 'POST') {
+      const body = await readBody(req)
+      const token = (body?.token || settings.telegram.token || '').trim()
+      return json(res, await detectChatId(token))
+    }
+    if (url.pathname === '/api/telegram/test' && req.method === 'POST') {
+      const body = await readBody(req)
+      const token = (body?.token || settings.telegram.token || '').trim()
+      const chatId = (body?.chatId || settings.telegram.chatId || '').trim()
+      const info = await getBotInfo(token)
+      if (!info.ok) return json(res, info)
+      const r = await sendTelegram(token, chatId, '🔔 <b>oversee</b>\nTelegram notifications are connected.')
+      return json(res, r.ok ? { ok: true, bot: info.username } : r)
     }
 
     return json(res, { error: 'not found' }, 404)
@@ -466,6 +519,7 @@ function mime(f) {
 async function main() {
   await tmux.init()
   await loadTasks()
+  await loadSettings()
   await registry.start()
   // When launched by the Electron shell (MC_EPHEMERAL), bind an OS-assigned port
   // on loopback and report it back to the parent — avoids fixed-port conflicts and
