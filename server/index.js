@@ -4,6 +4,7 @@ import fsp from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFile } from 'node:child_process'
 import { WebSocketServer } from 'ws'
 
 import { config } from './config.js'
@@ -176,6 +177,7 @@ async function handleApi(req, res, url) {
       if (t) {
         if (typeof body.status === 'string') t.status = body.status
         if ('agent' in body) t.agent = body.agent
+        if ('agentTmux' in body) t.agentTmux = body.agentTmux
         if (typeof body.text === 'string' && body.text.trim()) t.text = body.text.trim()
         await saveTasks(); broadcastTasks()
       }
@@ -196,6 +198,23 @@ async function handleApi(req, res, url) {
       }
       if (!tmux.available) return json(res, { error: 'tmux not available' }, 400)
       await tmux.sendPrompt(body.tmuxName, body.text)
+      return json(res, { ok: true })
+    }
+
+    // Reveal a session's folder in the OS file manager (Finder / Explorer / xdg).
+    if (url.pathname === '/api/reveal' && req.method === 'POST') {
+      const body = await readBody(req)
+      const dir = body?.cwd
+      if (!dir || typeof dir !== 'string') return json(res, { error: 'cwd required' }, 400)
+      try {
+        const st = await fsp.stat(dir)
+        if (!st.isDirectory()) return json(res, { error: 'not a directory' }, 400)
+      } catch {
+        return json(res, { error: 'folder not found' }, 404)
+      }
+      const opener = process.platform === 'darwin' ? 'open'
+        : process.platform === 'win32' ? 'explorer' : 'xdg-open'
+      await new Promise((resolve) => execFile(opener, [dir], () => resolve()))
       return json(res, { ok: true })
     }
 
@@ -331,49 +350,88 @@ function broadcastControl(msg) {
 
 async function attachPty(ws, url) {
   const name = url.searchParams.get('name')
-  if (!name || !tmux.available || !(await tmux.has(name))) {
+  if (!name || !tmux.available) {
     ws.send(JSON.stringify({ type: 'error', message: 'session not found' }))
     return ws.close()
   }
-  // Stream live output immediately.
-  const stop = tmux.openStream(name, (buf) => {
-    if (ws.readyState === 1) ws.send(buf)
-  })
+  // Buffer live output until the seed is painted (see seedNow). Forwarding it
+  // before the seed — while the program is mid-render — draws a partial frame
+  // that the seed then sits on top of, and the program's next relative redraw
+  // lands against a cursor the live stream has already moved past, leaving stale
+  // "leftover" text below the cursor. Gating means the seed is a clean baseline
+  // and the live stream continues from exactly the seeded cursor.
+  let live = false
+  let stop = () => {}
 
-  // Seed the current screen once we know the client's size, so the dump matches
-  // its width. We paint the visible pane from home (row 1), then place the cursor
-  // exactly where the program has it — otherwise xterm's cursor sits at the end
-  // of the dump and the program's next relative redraw (Ink moves the cursor up
-  // N lines and repaints) lands in the wrong place, garbling the screen.
+  // Seed the terminal once we know the client's size. We write scrollback history
+  // first (so the user can scroll up), then the visible screen padded to exactly
+  // the pane height, then place the cursor where the program actually has it.
+  // Padding to full height makes the last rows of the stream align 1:1 with the
+  // visible screen, so the absolute cursor move lands correctly — otherwise
+  // xterm's cursor sits at the end of the dump and the program's next relative
+  // redraw (Ink moves the cursor up N lines and repaints) garbles the screen.
   // capture-pane joins lines with bare "\n"; convert to CRLF or xterm renders a
   // diagonal staircase (convertEol:false).
   let seeded = false
+  let clientRows = 0 // the client's xterm row count, learned from its resize message
   const seedNow = async () => {
     if (seeded || ws.readyState !== 1) return
     seeded = true
-    const [screen, cur] = await Promise.all([tmux.capture(name), tmux.cursor(name)])
+    const [screen, history] = await Promise.all([tmux.capture(name), tmux.scrollback(name)])
+    const cur = await tmux.cursor(name) // query the cursor last, closest to going live
     if (ws.readyState !== 1) return
-    const body = screen.replace(/\n/g, '\r\n')
-    const place = `\x1b[${cur.y + 1};${cur.x + 1}H` // 1-based absolute cursor
-    ws.send('\x1b[2J\x1b[H' + body + place)
+    // Pad the visible screen to the CLIENT's row count (what xterm actually is),
+    // not the pane height. If a competing viewer is holding the pane at a smaller
+    // size, padding to the pane height would leave the screen block sitting at the
+    // bottom of the taller viewport with scrollback above it, so the absolute
+    // cursor move lands mid-screen and typed echoes mesh into old text. Padding to
+    // the client's rows keeps the screen block filling the viewport from the top.
+    const h = clientRows || cur.height || 24
+    let rows = screen.replace(/\n$/, '').split('\n')
+    if (rows.length > h) rows = rows.slice(-h)
+    while (rows.length < h) rows.push('') // pad to full height for cursor alignment
+    const historyPart = history ? history.replace(/\n/g, '\r\n') + '\r\n' : ''
+    const cy = Math.min(cur.y, h - 1) // cursor row within the viewport
+    const place = `\x1b[${cy + 1};${cur.x + 1}H` // 1-based absolute cursor
+    ws.send('\x1b[2J\x1b[H' + historyPart + rows.join('\r\n') + place)
+    live = true // from here, forward live output — it continues from the seeded cursor
   }
 
+  // Register the message handler synchronously — BEFORE the async has-check
+  // below. The client sends its resize the instant the socket opens; if the
+  // handler weren't attached yet, `ws` would drop that frame (no listener), we'd
+  // never learn the client's rows, and the seed would fall back to the pane
+  // height — misplacing the cursor whenever a competing viewer holds the pane at
+  // a different size.
   ws.on('message', async (raw) => {
     try {
       const msg = JSON.parse(raw.toString())
       if (msg.t === 'i') await tmux.sendKeys(name, msg.d)
       else if (msg.t === 'r') {
-        await tmux.resize(name, msg.c, msg.r)
+        // Remember the client's real row count so both seed paths pad to it;
+        // resize fire-and-forget so a slow (contended) tmux call can't delay
+        // learning the size or scheduling the seed.
+        clientRows = msg.r || clientRows
         if (!seeded) setTimeout(seedNow, 130) // let claude repaint at the new size
+        tmux.resize(name, msg.c, msg.r)
       }
     } catch {
       /* ignore malformed */
     }
   })
-  // Fallback in case the client never reports a size.
-  setTimeout(seedNow, 500)
-  ws.on('close', stop)
-  ws.on('error', stop)
+  ws.on('close', () => stop())
+  ws.on('error', () => stop())
+
+  if (!(await tmux.has(name))) {
+    ws.send(JSON.stringify({ type: 'error', message: 'session not found' }))
+    return ws.close()
+  }
+  stop = tmux.openStream(name, (buf) => {
+    if (live && ws.readyState === 1) ws.send(buf)
+  })
+  // Fallback in case the client never reports a size. Kept long so a contended
+  // event loop still processes the client's resize (and sets clientRows) first.
+  setTimeout(seedNow, 900)
 }
 
 // ---- helpers ----------------------------------------------------------------

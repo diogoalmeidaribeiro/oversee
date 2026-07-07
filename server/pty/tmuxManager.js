@@ -95,14 +95,27 @@ export class TmuxManager {
     }
   }
 
-  // Where the program's cursor currently is (0-based col/row within the pane).
+  // Where the program's cursor currently is (0-based col/row within the pane),
+  // plus the pane height so the seed can pad the visible screen to full height.
   async cursor(name) {
     try {
-      const { stdout } = await tmux(['display-message', '-p', '-t', name, '#{cursor_x},#{cursor_y}'])
-      const [x, y] = stdout.trim().split(',').map((n) => Number(n) || 0)
-      return { x, y }
+      const { stdout } = await tmux(['display-message', '-p', '-t', name, '#{cursor_x},#{cursor_y},#{pane_height}'])
+      const [x, y, height] = stdout.trim().split(',').map((n) => Number(n) || 0)
+      return { x, y, height }
     } catch {
-      return { x: 0, y: 0 }
+      return { x: 0, y: 0, height: 0 }
+    }
+  }
+
+  // Lines above the visible screen (history) so the client can scroll up. Kept
+  // separate from the visible screen (capture) so the latter can be padded to
+  // exactly pane height and stay cursor-aligned — see the seed in index.js.
+  async scrollback(name) {
+    try {
+      const { stdout } = await tmux(['capture-pane', '-p', '-e', '-S', '-3000', '-E', '-1', '-t', name])
+      return stdout
+    } catch {
+      return ''
     }
   }
 

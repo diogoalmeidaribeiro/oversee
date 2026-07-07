@@ -47,6 +47,14 @@ export function SessionCard({ s, onOpen, onKill, onDropTask, expanded, onToggle,
     const r = e.currentTarget.getBoundingClientRect()
     setMenu({ top: Math.round(r.bottom + 5), left: Math.round(r.right - MENU_W) })
   }
+  const revealFolder = (e) => {
+    e.stopPropagation()
+    if (!s.cwd) return
+    fetch('/api/reveal', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cwd: s.cwd }),
+    }).catch(() => {})
+  }
   const finished = s.justFinished && s.state === 'idle'
   const stateClass = finished ? 'finished' : s.state
 
@@ -92,6 +100,11 @@ export function SessionCard({ s, onOpen, onKill, onDropTask, expanded, onToggle,
             {!showFolder && <span className={`dot ${stateClass}`} />}
           </div>
         </div>
+        {s.cwd && (
+          <button className="kebab" title="Open folder in Finder" onClick={revealFolder}>
+            <Icon.folderOpen />
+          </button>
+        )}
         <button className="kebab" title="Actions" onClick={openMenu}>
           <Icon.kebab />
         </button>

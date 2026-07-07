@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useControlSocket } from './ws/useControlSocket.js'
 import { SessionCard } from './components/SessionCard.jsx'
 import { ProjectGroup } from './components/ProjectGroup.jsx'
@@ -82,7 +82,7 @@ export default function App() {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ tmuxName: s.tmuxName, text: task.text }),
     }).catch(() => {})
-    updateTask(task.id, { status: 'in_progress', agent: s.cwdName })
+    updateTask(task.id, { status: 'in_progress', agent: s.cwdName, agentTmux: s.tmuxName })
     if (!openTerm) setOpenTerm(s) // pop the terminal so you see it working
   }
 
@@ -91,6 +91,26 @@ export default function App() {
     [sessions],
   )
   useEffect(() => { updateTabTitle(attention, muted) }, [attention, muted])
+
+  // Auto-complete a dispatched task once its agent finishes the prompt: we wait
+  // until we've actually seen that session go WORKING (so a session that's still
+  // idle right after dispatch doesn't complete instantly), then mark the task
+  // done when it returns to IDLE. We don't complete on WAITING — that means the
+  // agent is asking *you* something and is still working the task.
+  const sawWorking = useRef(new Set())
+  useEffect(() => {
+    for (const task of tasks) {
+      if (task.status !== 'in_progress' || !task.agentTmux) continue
+      const sess = sessions.find((s) => s.tmuxName === task.agentTmux)
+      if (!sess) continue
+      if (sess.state === 'working') {
+        sawWorking.current.add(task.id)
+      } else if (sawWorking.current.has(task.id) && sess.state === 'idle') {
+        sawWorking.current.delete(task.id)
+        updateTask(task.id, { status: 'done' })
+      }
+    }
+  }, [sessions, tasks])
 
   const groups = useMemo(() => {
     const map = new Map()
