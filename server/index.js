@@ -12,7 +12,7 @@ import { RegistryWatcher } from './registry/watcher.js'
 import { TranscriptStore } from './transcript/tailer.js'
 import { StateEngine, State } from './state/engine.js'
 import { Notifier } from './notify/notifier.js'
-import { sendTelegram, detectChatId, getBotInfo } from './notify/telegram.js'
+import { sendTelegram, detectChatId, getBotInfo, getUpdates, setCommands } from './notify/telegram.js'
 import { TmuxManager } from './pty/tmuxManager.js'
 import { gitDiffStat } from './git/diffStat.js'
 
@@ -47,6 +47,69 @@ const notifier = new Notifier(() => settings.telegram)
 let latest = { sessions: [], tmuxAvailable: false, hubSessions: [] }
 const titleBySession = new Map()
 
+// ---- Telegram command bot ---------------------------------------------------
+// A single long-poll loop (started at boot) that reads settings live: it idles
+// when Telegram is disabled and polls getUpdates when enabled. Commands from the
+// linked chat drive the inbox (/task, /tasks, /status).
+const TG_COMMANDS = [
+  { command: 'task', description: 'Add a task to the inbox' },
+  { command: 'tasks', description: 'List open tasks' },
+  { command: 'status', description: 'Fleet summary' },
+  { command: 'help', description: 'Show commands' },
+]
+let tgOffset = 0
+let tgCommandsFor = ''
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+async function handleTgCommand(msg) {
+  const tg = settings.telegram
+  const text = (msg?.text || '').trim()
+  const chatId = msg?.chat?.id
+  if (!text || chatId == null || String(chatId) !== String(tg.chatId)) return // only the linked chat
+  const reply = (t) => sendTelegram(tg.token, chatId, t).catch(() => {})
+  const sp = text.indexOf(' ')
+  const cmd = (sp === -1 ? text : text.slice(0, sp)).toLowerCase().replace(/@.*$/, '')
+  const arg = sp === -1 ? '' : text.slice(sp + 1).trim()
+
+  if (cmd === '/task' || cmd === '/add') {
+    if (!arg) return reply('Usage: <code>/task what to do</code>')
+    const t = addTask(arg)
+    return reply(`✅ Added to inbox:\n<b>${esc(t.text)}</b>`)
+  }
+  if (cmd === '/tasks') {
+    const open = tasks.filter((t) => t.status !== 'done')
+    if (!open.length) return reply('Inbox is empty.')
+    return reply('<b>Inbox</b>\n' + open.map((t) => `${t.status === 'in_progress' ? '⏳' : '▫️'} ${esc(t.text)}`).join('\n'))
+  }
+  if (cmd === '/status') {
+    const s = latest.sessions || []
+    const w = s.filter((x) => x.state === 'waiting').length
+    const r = s.filter((x) => x.state === 'working').length
+    return reply(`<b>oversee</b>\n🔴 ${w} waiting · ▶️ ${r} running · ${s.length} session${s.length === 1 ? '' : 's'}`)
+  }
+  if (cmd === '/help' || cmd === '/start') {
+    return reply('<b>oversee</b> — commands:\n<code>/task &lt;text&gt;</code>  add to inbox\n<code>/tasks</code>  list open tasks\n<code>/status</code>  fleet summary')
+  }
+  if (cmd.startsWith('/')) return reply('Unknown command. Try <code>/help</code>.')
+}
+
+async function telegramLoop() {
+  for (;;) {
+    const tg = settings.telegram
+    if (!tg.enabled || !tg.token) { await sleep(2000); continue }
+    if (tgCommandsFor !== tg.token) { tgCommandsFor = tg.token; setCommands(tg.token, TG_COMMANDS) }
+    const upd = await getUpdates(tg.token, tgOffset, 25)
+    if (upd.ok) {
+      for (const u of upd.result) {
+        tgOffset = u.update_id + 1
+        try { await handleTgCommand(u.message || u.edited_message) } catch { /* ignore one bad update */ }
+      }
+    } else {
+      await sleep(3000) // back off on error (bad token, 409, network)
+    }
+  }
+}
+
 // "Recently done" feed: bounded log of turns completed since the hub started.
 const hubStartedAt = Date.now()
 const doneFeed = [] // newest first, { ts, sessionId, project, title, files }
@@ -65,6 +128,14 @@ async function loadTasks() {
 async function saveTasks() {
   try { await fsp.writeFile(tasksFile, JSON.stringify(tasks, null, 2)) } catch {}
 }
+// Create a task in the inbox (used by the HTTP API and the Telegram bot).
+function addTask(text) {
+  const task = { id: ++taskSeq, text: String(text).trim(), status: 'todo', agent: null, createdAt: Date.now() }
+  tasks.push(task)
+  saveTasks(); broadcastTasks()
+  return task
+}
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 function broadcastTasks() {
   latest = { ...latest, tasks }
   broadcastControl({ type: 'snapshot', ...latest })
@@ -186,10 +257,7 @@ async function handleApi(req, res, url) {
       const body = await readBody(req)
       const text = String(body?.text || '').trim()
       if (!text) return json(res, { error: 'text required' }, 400)
-      const task = { id: ++taskSeq, text, status: 'todo', agent: null, createdAt: Date.now() }
-      tasks.push(task)
-      await saveTasks(); broadcastTasks()
-      return json(res, task)
+      return json(res, addTask(text))
     }
     if (url.pathname === '/api/tasks/update' && req.method === 'POST') {
       const body = await readBody(req)
@@ -520,6 +588,7 @@ async function main() {
   await tmux.init()
   await loadTasks()
   await loadSettings()
+  telegramLoop() // long-poll for Telegram commands (idles until enabled)
   await registry.start()
   // When launched by the Electron shell (MC_EPHEMERAL), bind an OS-assigned port
   // on loopback and report it back to the parent — avoids fixed-port conflicts and

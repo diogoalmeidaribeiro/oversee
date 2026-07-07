@@ -94,6 +94,10 @@ export function SettingsDialog({ onClose }) {
           </label>
 
           {status && <div className={`settings-status ${status.kind}`}>{status.msg}</div>}
+
+          <p className="settings-hint cmds">
+            Message your bot to drive the inbox: <code>/task &lt;text&gt;</code> · <code>/tasks</code> · <code>/status</code>
+          </p>
         </div>
 
         <div className="modal-actions">

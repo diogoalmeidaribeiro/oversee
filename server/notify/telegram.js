@@ -39,6 +39,31 @@ export async function detectChatId(token) {
   }
 }
 
+// Long-poll for incoming updates (commands the user sends the bot). offset acks
+// everything below it; a server-side timeout keeps the request open (efficient).
+export async function getUpdates(token, offset, timeout = 30) {
+  try {
+    const url = `${API}${token}/getUpdates?timeout=${timeout}&offset=${offset || 0}&allowed_updates=%5B%22message%22%5D`
+    const res = await fetch(url)
+    const data = await res.json().catch(() => ({}))
+    if (!data.ok) return { ok: false, error: data.description || `HTTP ${res.status}`, result: [] }
+    return { ok: true, result: data.result || [] }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e), result: [] }
+  }
+}
+
+// Register the slash-command menu shown in Telegram's UI.
+export async function setCommands(token, commands) {
+  try {
+    await fetch(`${API}${token}/setMyCommands`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ commands }),
+    })
+  } catch { /* ignore */ }
+}
+
 // Verify a token and return the bot's @username.
 export async function getBotInfo(token) {
   if (!token) return { ok: false, error: 'missing token' }
