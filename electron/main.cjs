@@ -32,9 +32,12 @@ function fixPath() {
   } catch {
     /* fall through to the static fallback below */
   }
+  // APPEND common locations as a fallback only — never prepend. Prepending would
+  // override the login shell's own ordering and can shadow the user's real tool
+  // (e.g. an old ~/.local/bin/claude jumping ahead of their current nvm claude).
   const extra = ['/opt/homebrew/bin', '/usr/local/bin', `${process.env.HOME}/.local/bin`]
   const have = new Set((process.env.PATH || '').split(':'))
-  process.env.PATH = [...extra.filter((p) => !have.has(p)), process.env.PATH].filter(Boolean).join(':')
+  process.env.PATH = [process.env.PATH, ...extra.filter((p) => !have.has(p))].filter(Boolean).join(':')
 }
 
 function fail(message) {
