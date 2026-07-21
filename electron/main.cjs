@@ -49,7 +49,14 @@ function fail(message) {
 function startServer() {
   if (app.isPackaged) fixPath() // dev is launched from a terminal and already has PATH
   const env = { ...process.env, MC_EPHEMERAL: '1' }
-  serverChild = utilityProcess.fork(serverEntry, [], { env, stdio: 'inherit' })
+  // Cap the V8 heap so a server-side leak OOMs the (restartable) child process
+  // cleanly instead of exhausting system RAM and dragging the whole Mac into
+  // swap-death. 1 GB is far above this monitor's real working set.
+  serverChild = utilityProcess.fork(serverEntry, [], {
+    env,
+    stdio: 'inherit',
+    execArgv: ['--max-old-space-size=1024'],
+  })
 
   const timeout = setTimeout(() => fail('The oversee.sh server did not start in time.'), 15000)
   serverChild.on('message', (msg) => {
@@ -75,7 +82,7 @@ function createWindow(port) {
     backgroundColor: '#0a0a0a',
     webPreferences: { contextIsolation: true, nodeIntegration: false },
   })
-  const url = process.env.MC_DEV ? 'http://localhost:5173' : `http://127.0.0.1:${port}`
+  const url = process.env.MC_DEV ? 'http://localhost:5180' : `http://127.0.0.1:${port}`
   win.loadURL(url)
   if (process.env.MC_DEV) win.webContents.openDevTools({ mode: 'detach' })
   // Open target=_blank / external links in the system browser, not a new window.

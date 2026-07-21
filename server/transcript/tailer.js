@@ -139,4 +139,12 @@ export class TranscriptStore {
     this.readers.delete(sessionId)
     this.paths.delete(sessionId)
   }
+
+  // Drop every session not in `keep` (a Set of live sessionIds). Each Reader holds
+  // an accumulating summary + file Sets, so without this the store grows for the
+  // life of the hub as sessions come and go.
+  retain(keep) {
+    for (const id of this.readers.keys()) if (!keep.has(id)) this.readers.delete(id)
+    for (const id of this.paths.keys()) if (!keep.has(id)) this.paths.delete(id)
+  }
 }

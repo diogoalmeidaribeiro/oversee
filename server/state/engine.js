@@ -99,14 +99,22 @@ export class StateEngine {
       })
     }
 
-    // Sessions that vanished from the registry are dead.
+    // Sessions that vanished from the registry are dead. Emit the DEAD transition
+    // once, then forget them entirely — keeping them forever leaked one Map entry
+    // per session ever seen. (If the same sessionId reappears it's a fresh life and
+    // is correctly treated as new.)
     for (const sid of [...this.prev.keys()]) {
       if (!seen.has(sid)) {
         const prev = this.prev.get(sid)
         if (prev !== State.DEAD) transitions.push({ sessionId: sid, from: prev, to: State.DEAD })
-        this.prev.set(sid, State.DEAD)
+        this.prev.delete(sid)
+        this.finishedAt.delete(sid)
       }
     }
+
+    // Prune the pid->liveness cache to pids still in the registry.
+    const livePids = new Set([...entries.values()].map((e) => e.pid))
+    for (const pid of this._liveCache.keys()) if (!livePids.has(pid)) this._liveCache.delete(pid)
 
     sessions.sort((a, b) => {
       const pa = a.justFinished ? 1 : PRIORITY[a.state]

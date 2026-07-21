@@ -28,6 +28,16 @@ export class Notifier {
     return now - this.bootedAt < config.startupGraceMs
   }
 
+  // Forget cooldown keys for sessions that have left the registry (keys are
+  // `${sessionId}:${kind}`), so lastSent doesn't accumulate one entry per session
+  // ever seen. `keep` is a Set of live sessionIds.
+  retain(keep) {
+    for (const key of this.lastSent.keys()) {
+      const sid = key.slice(0, key.lastIndexOf(':'))
+      if (!keep.has(sid)) this.lastSent.delete(key)
+    }
+  }
+
   handleTransitions(transitions, titleOf) {
     const now = Date.now()
     if (this._inGrace(now)) return

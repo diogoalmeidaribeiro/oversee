@@ -8,6 +8,13 @@ import { config } from '../config.js'
 
 const pexec = promisify(execFile)
 
+// Named keys the Telegram bot may send to a pane (tmux key-name syntax). Kept to
+// a safe, useful set: menu navigation + a few control keys.
+export const SPECIAL_KEYS = new Set([
+  'Enter', 'Escape', 'Up', 'Down', 'Left', 'Right', 'Tab', 'BSpace', 'Space',
+  'C-c', 'C-d', 'C-u', 'C-r', 'C-a', 'C-e', 'PageUp', 'PageDown',
+])
+
 // Owns Claude sessions the hub launches, using tmux as the durable backbone.
 // No native modules: output is streamed via `tmux pipe-pane` to a temp file we
 // tail; input is forwarded via `tmux send-keys -H`. Sessions survive browser
@@ -124,6 +131,26 @@ export class TmuxManager {
     await tmux(['resize-window', '-t', name, '-x', String(cols), '-y', String(rows)]).catch(() => {})
   }
 
+  // Plain (no ANSI) snapshot of the visible pane — used to reply with a session's
+  // current screen over Telegram, where escape codes would be noise.
+  async capturePlain(name) {
+    try {
+      const { stdout } = await tmux(['capture-pane', '-p', '-t', name])
+      return stdout
+    } catch {
+      return ''
+    }
+  }
+
+  // Send a single named key (Enter, Escape, Up, Down, Tab, C-c, …) to drive
+  // Claude's TUI menus from Telegram. Only allowlisted tokens reach send-keys, so
+  // a caller can't inject extra tmux arguments.
+  async sendSpecial(name, key) {
+    if (!SPECIAL_KEYS.has(key)) return false
+    await tmux(['send-keys', '-t', name, key]).catch(() => {})
+    return true
+  }
+
   // Forward raw bytes from the browser terminal into the pane.
   async sendKeys(name, data) {
     const hex = Buffer.from(data, 'utf8')
@@ -161,6 +188,11 @@ export class TmuxManager {
       try { fs.writeFileSync(file, '') } catch {}
       tmux(['pipe-pane', '-t', name, `cat >> ${shellQuote(file)}`]).catch(() => {})
       s = { file, offset: 0, refs: 0, listeners: new Set(), watcher: null }
+      // `cat >>` appends forever, so the pipe file would grow without bound while a
+      // terminal stays open (a chatty session — a build, a runaway loop — fills the
+      // disk). Once we've streamed past this many bytes, truncate and rewind: we're
+      // caught up to EOF at that point, so at most a 60ms sliver of output is lost.
+      const ROTATE_BYTES = 8 * 1024 * 1024
       const pump = () => {
         try {
           const stat = fs.statSync(file)
@@ -172,6 +204,9 @@ export class TmuxManager {
             fs.closeSync(fd)
             s.offset = stat.size
             for (const l of s.listeners) l(buf)
+          }
+          if (s.offset >= ROTATE_BYTES) {
+            try { fs.truncateSync(file); s.offset = 0 } catch {}
           }
         } catch {}
       }
@@ -187,6 +222,7 @@ export class TmuxManager {
         clearInterval(s.watcher)
         tmux(['pipe-pane', '-t', name]).catch(() => {}) // toggle off
         this._streams.delete(name)
+        fs.rm(file, { force: true }, () => {}) // don't leave the pipe log on disk
       }
     }
   }
