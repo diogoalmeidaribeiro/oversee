@@ -1,33 +1,69 @@
-# Mission Control
+# oversee
 
-A localhost hub to watch — and drive — all your Claude Code terminals at once.
+**One screen for every Claude Code terminal.** The ones waiting on you float to the
+top — launch new sessions, type into them, and drive them from your phone.
+
+MIT-licensed · macOS (Apple Silicon) · local-only, no API, no account.
 
 You run 10+ `claude` terminals and lose track of what you asked, which are working,
-which are waiting on you, and what got done. Mission Control puts every session on
-one screen: the ones **waiting for you** or **just finished** float to the top, and
-you can **launch new sessions and type into them** without hunting through tabs.
+which are waiting on you, and what got done. oversee puts every session on one
+screen: the ones **waiting for you** or **just finished** float to the top, and you
+can **launch new sessions and type into them** without hunting through tabs — in the
+browser, the desktop app, or over Telegram.
 
-It works entirely off local files Claude Code already writes — no API, no config:
+## Download (macOS)
+
+Grab the latest `.dmg` from the
+[**Releases**](https://github.com/diogoalmeidaribeiro/oversee/releases) page and drag
+oversee into Applications.
+
+It's a free, **unsigned** build, so macOS Gatekeeper blocks it on first launch. Open
+it the hard way once and macOS remembers your choice:
+
+- **Right-click the app → Open → Open**, or
+- run `xattr -dr com.apple.quarantine /Applications/oversee.app`
+
+**You'll also need:**
+
+- The [`claude`](https://docs.anthropic.com/en/docs/claude-code) CLI on your `PATH`.
+- [`tmux`](https://github.com/tmux/tmux) to launch/drive sessions — `brew install tmux`.
+  Without it, oversee still runs in monitor-only mode.
+- *(optional, for Telegram voice)* `ffmpeg` + a local whisper — see below.
+
+Open the app; every running `claude` session shows up automatically.
+
+## Run from source
+
+```bash
+npm install
+npm start        # builds the UI + serves on http://localhost:4600 (loopback only)
+```
+
+Development with hot-reload:
+
+```bash
+npm run dev            # UI on http://localhost:5180, server on :4600 (proxied)
+npm run electron:dev   # the desktop shell, in dev
+```
+
+Build your own app bundle (DMG + zip land in `release/`):
+
+```bash
+npm run dist
+```
+
+The server binds to **loopback only** by default. To reach the UI from another
+device (e.g. your phone), set `MC_HOST=0.0.0.0` — but only on a network you trust:
+there is no authentication. See [SECURITY.md](SECURITY.md).
+
+## How it works
+
+It reads the files Claude Code already writes — no API, no config:
 
 - `~/.claude/sessions/<pid>.json` — live per-process registry; the `status` field
   (`busy` / `waiting` / `idle` / `shell`) is the ground truth for each session's state.
 - `~/.claude/projects/<slug>/<sessionId>.jsonl` — the transcript, joined by
   `sessionId`, for the auto-title, last prompt, current activity, files touched, and tokens.
-
-## Run it
-
-```bash
-npm install
-npm start        # builds the UI and serves everything on http://localhost:4600
-```
-
-For development with hot-reload:
-
-```bash
-npm run dev      # UI on http://localhost:5173, server on :4600 (proxied)
-```
-
-Open the URL. Every running `claude` session shows up automatically.
 
 ## What you get
 
@@ -44,7 +80,7 @@ Open the URL. Every running `claude` session shows up automatically.
   Projects that need you float to the top; group headers are collapsible. Your
   choice is remembered.
 - **Design** — a dark, monospace (Geist Mono) terminal aesthetic with corner-bracket
-  panels, following the Eliza design language.
+  panels.
 - **Per session** — auto-title, last ask, current tool activity, files touched,
   token count, last-turn duration, and (on expand) a live `git diff` stat.
 - **Launch + drive** — the **+ Launch session** button starts `claude` in a folder
@@ -53,6 +89,34 @@ Open the URL. Every running `claude` session shows up automatically.
   and on finish, plus a `(N)` tab-title count and a sound when the tab is unfocused
   (mute with the 🔔 toggle). Anti-spam: per-session cooldown, burst coalescing, and
   a startup grace so restarting the hub never floods you.
+
+## Drive terminals from Telegram (text + voice)
+
+Once Telegram is linked (Settings → Notifications, or `MC_TG_TOKEN`/`MC_TG_CHAT`),
+the bot is two-way — from your phone you can drive any hub-launched terminal:
+
+- `/sessions` — list drivable terminals, `/use <n>` — pick the one to drive.
+- Send **any text** → it's typed into that session + Enter, and the bot replies
+  with a snapshot of the pane a couple seconds later.
+- Send a **voice note** → transcribed locally, echoed back, then typed in.
+- `/follow <n>` — **live-stream** the terminal: one message that updates in place as
+  the pane changes (raw screen, so you see menus and the working state); `/unfollow`
+  to stop. `/peek` is the one-shot version.
+- `/enter` `/esc` `/up` `/down` `/key <name>` (e.g. `C-c`, `Tab`) — press a key to
+  drive Claude's menus.
+
+Everything stays locked to the single linked chat. Only `cc_*` (hub-launched)
+sessions are drivable — see the read-only note below.
+
+**Voice setup (fully local, no API).** Transcription auto-detects one of:
+- [`openai-whisper`](https://github.com/openai/whisper) — the `whisper` CLI
+  (`pip install -U openai-whisper`); accepts the voice note directly. Zero config.
+- [`whisper.cpp`](https://github.com/ggerganov/whisper.cpp) — faster; `brew install
+  whisper-cpp`, grab a model (e.g. `ggml-base.en.bin`), then set `MC_WHISPER=whisper-cli`
+  and `MC_WHISPER_MODEL=/path/to/ggml-base.en.bin`.
+
+Both need `ffmpeg` on PATH. Language auto-detects; pin it with `MC_WHISPER_LANG=en`
+(or `pt`, …). Without a backend, text driving still works; voice returns a hint.
 
 ## How the terminals persist
 
@@ -82,6 +146,18 @@ If tmux isn't installed, everything except launching/embedding terminals still w
 
 ```
 server/   Node (pure JS, no native deps): registry watcher, transcript tailer,
-          state engine, tmux manager, notifier, HTTP + two WebSocket channels.
+          state engine, tmux manager, notifier + Telegram bot, voice transcribe,
+          HTTP + two WebSocket channels.
 src/      Vite + React UI: session grid, cards, xterm.js terminal, launch dialog.
+electron/ Desktop shell — forks the server on a loopback port, opens a window.
+landing/  Marketing site (reuses the real UI components for the hero mock).
 ```
+
+## Contributing
+
+Issues and PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). For security
+reports, see [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE) © 2026 Diogo Ribeiro.

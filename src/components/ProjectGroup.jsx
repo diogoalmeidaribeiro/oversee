@@ -1,7 +1,7 @@
 import { SessionCard } from './SessionCard.jsx'
 
-// A per-project group: an Eliza-style section header (square bullet, uppercase
-// mono label, dot-separated summary on the right) over its session cards.
+// A per-project group: a section header (square bullet, uppercase mono label,
+// dot-separated summary on the right) over its session cards.
 export function ProjectGroup({ group, collapsed, onToggleCollapse, expanded, onToggleCard, onOpen, onKill, onDropTask, openTermName }) {
   const summary = []
   if (group.waiting) summary.push(`${group.waiting} waiting`)

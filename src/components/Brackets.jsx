@@ -1,5 +1,5 @@
-// Signature corner-bracket accents from the Eliza design language. Four small
-// L-marks, one per corner, drawn with borders. Purely decorative.
+// Signature corner-bracket accents. Four small L-marks, one per corner, drawn
+// with borders. Purely decorative.
 export function Brackets() {
   return (
     <div className="brackets" aria-hidden="true">
