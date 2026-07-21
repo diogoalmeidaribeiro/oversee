@@ -29,4 +29,13 @@ export const config = {
   tmuxPrefix: 'cc_',
   tmuxBin: process.env.MC_TMUX || 'tmux',
   claudeBin: process.env.MC_CLAUDE || 'claude',
+
+  // Local voice transcription for the Telegram bot (drive terminals by voice).
+  // Two backends are auto-detected: whisper.cpp (fast; needs a ggml model) or the
+  // Python `openai-whisper` CLI (slower; accepts the .ogg directly). Both are
+  // fully local — nothing leaves the machine.
+  whisperBin: process.env.MC_WHISPER || 'whisper-cli', // whisper.cpp binary if present
+  whisperModel: process.env.MC_WHISPER_MODEL || 'base', // ggml path (cpp) or model name (python)
+  whisperLang: process.env.MC_WHISPER_LANG || 'auto', // 'auto' detects; or a code like 'en' / 'pt'
+  ffmpegBin: process.env.MC_FFMPEG || 'ffmpeg',
 }

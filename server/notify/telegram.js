@@ -1,6 +1,8 @@
 // Minimal Telegram Bot API connector — no deps, uses global fetch.
 // Get a token from @BotFather, message your bot once, then detectChatId() finds
 // the chat to deliver to.
+import fs from 'node:fs/promises'
+
 const API = 'https://api.telegram.org/bot'
 
 export async function sendTelegram(token, chatId, text) {
@@ -13,7 +15,25 @@ export async function sendTelegram(token, chatId, text) {
     })
     const data = await res.json().catch(() => ({}))
     if (!data.ok) return { ok: false, error: data.description || `HTTP ${res.status}` }
-    return { ok: true }
+    return { ok: true, messageId: data.result?.message_id }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+}
+
+// Replace the text of a message already sent — used by the live /follow view so a
+// stream of updates edits one message in place instead of spamming the chat.
+export async function editMessage(token, chatId, messageId, text) {
+  if (!token || !chatId || !messageId) return { ok: false, error: 'missing ids' }
+  try {
+    const res = await fetch(`${API}${token}/editMessageText`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML', disable_web_page_preview: true }),
+    })
+    const data = await res.json().catch(() => ({}))
+    // "message is not modified" is benign — we only edit on change, so it's rare.
+    return { ok: !!data.ok, error: data.description }
   } catch (e) {
     return { ok: false, error: String(e?.message || e) }
   }
@@ -60,6 +80,48 @@ export async function setCommands(token, commands) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ commands }),
+    })
+  } catch { /* ignore */ }
+}
+
+// Resolve a file_id (e.g. a voice note) to its temporary storage path on
+// Telegram's servers. Valid for ~1h; download it via downloadFile below.
+export async function getFile(token, fileId) {
+  if (!token || !fileId) return { ok: false, error: 'missing token or file id' }
+  try {
+    const res = await fetch(`${API}${token}/getFile?file_id=${encodeURIComponent(fileId)}`)
+    const data = await res.json().catch(() => ({}))
+    if (!data.ok) return { ok: false, error: data.description || `HTTP ${res.status}` }
+    return { ok: true, filePath: data.result?.file_path }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+}
+
+// Download a file (by the file_path from getFile) to disk. Note the /file/ URL
+// shape — the bot token lives in the path, not a header.
+export async function downloadFile(token, filePath, destPath) {
+  if (!token || !filePath) return { ok: false, error: 'missing token or file path' }
+  try {
+    const res = await fetch(`https://api.telegram.org/file/bot${token}/${filePath}`)
+    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` }
+    const buf = Buffer.from(await res.arrayBuffer())
+    await fs.writeFile(destPath, buf)
+    return { ok: true, bytes: buf.length }
+  } catch (e) {
+    return { ok: false, error: String(e?.message || e) }
+  }
+}
+
+// Show a transient status in the chat ("recording audio…", "typing…") — best
+// effort, never throws.
+export async function sendChatAction(token, chatId, action = 'typing') {
+  if (!token || !chatId) return
+  try {
+    await fetch(`${API}${token}/sendChatAction`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action }),
     })
   } catch { /* ignore */ }
 }

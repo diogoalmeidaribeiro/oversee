@@ -12,8 +12,9 @@ import { RegistryWatcher } from './registry/watcher.js'
 import { TranscriptStore } from './transcript/tailer.js'
 import { StateEngine, State } from './state/engine.js'
 import { Notifier } from './notify/notifier.js'
-import { sendTelegram, detectChatId, getBotInfo, getUpdates, setCommands } from './notify/telegram.js'
+import { sendTelegram, detectChatId, getBotInfo, getUpdates, setCommands, getFile, downloadFile, sendChatAction, editMessage } from './notify/telegram.js'
 import { TmuxManager } from './pty/tmuxManager.js'
+import { detectBackend as detectVoiceBackend, backendInfo as voiceInfo, transcribe } from './voice/transcribe.js'
 import { gitDiffStat } from './git/diffStat.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -47,29 +48,223 @@ const notifier = new Notifier(() => settings.telegram)
 let latest = { sessions: [], tmuxAvailable: false, hubSessions: [] }
 const titleBySession = new Map()
 
-// ---- Telegram command bot ---------------------------------------------------
+// ---- Telegram two-way control ----------------------------------------------
 // A single long-poll loop (started at boot) that reads settings live: it idles
-// when Telegram is disabled and polls getUpdates when enabled. Commands from the
-// linked chat drive the inbox (/task, /tasks, /status).
+// when Telegram is disabled and polls getUpdates when enabled. From the linked
+// chat you can drive a hub-owned terminal — plain text (and voice notes) get
+// typed into the current target and the bot replies with a snapshot of the pane.
 const TG_COMMANDS = [
+  { command: 'sessions', description: 'List drivable terminals' },
+  { command: 'use', description: 'Pick the terminal to drive: /use <n>' },
+  { command: 'follow', description: 'Live-stream a terminal: /follow <n>' },
+  { command: 'unfollow', description: 'Stop the live stream' },
+  { command: 'peek', description: 'Show the current terminal screen' },
+  { command: 'enter', description: 'Press Enter in the terminal' },
+  { command: 'status', description: 'Fleet summary + current target' },
   { command: 'task', description: 'Add a task to the inbox' },
   { command: 'tasks', description: 'List open tasks' },
-  { command: 'status', description: 'Fleet summary' },
   { command: 'help', description: 'Show commands' },
 ]
+const TG_HELP = [
+  '<b>oversee</b> — drive your terminals',
+  '',
+  '<code>/sessions</code>  list terminals',
+  '<code>/use &lt;n&gt;</code>  pick which to drive',
+  'send any text → typed in + Enter',
+  '🎤 voice note → transcribed, then typed in',
+  '<code>/follow &lt;n&gt;</code>  live-stream the screen · <code>/unfollow</code>',
+  '<code>/peek</code>  show the screen once',
+  '<code>/enter /esc /up /down</code>  press a key',
+  '<code>/key &lt;name&gt;</code>  e.g. C-c, Tab',
+  '',
+  '<code>/task &lt;text&gt;</code>  add to inbox · <code>/tasks</code> · <code>/status</code>',
+].join('\n')
+// Slash-command → tmux key name for the one-tap keys.
+const TG_KEYMAP = { '/enter': 'Enter', '/esc': 'Escape', '/up': 'Up', '/down': 'Down', '/left': 'Left', '/right': 'Right', '/tab': 'Tab' }
+
 let tgOffset = 0
 let tgCommandsFor = ''
+let tgTarget = null       // tmuxName currently being driven
+let tgSessionList = []     // last /sessions ordering, so /use <n> resolves to a name
+let tgFollow = null        // live view: { name, chatId, messageId, cwdName, lastText, timer }
+const FOLLOW_MS = 2500     // how often the live view refreshes
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-async function handleTgCommand(msg) {
+// Hub-owned (typeable) sessions, from the live snapshot the refresh loop builds.
+function drivableSessions() {
+  return (latest.sessions || [])
+    .filter((s) => s.hubOwned && s.tmuxName)
+    .map((s) => ({ name: s.tmuxName, cwdName: s.cwdName || s.cwd || s.tmuxName, state: s.state }))
+}
+
+// The current target's tmux name, or null. Drops a target that has gone away and
+// auto-adopts the sole session so a single-agent setup needs no /use.
+async function resolveTarget() {
+  const list = drivableSessions()
+  if (tgTarget && !list.some((s) => s.name === tgTarget)) tgTarget = null
+  if (!tgTarget && list.length === 1) tgTarget = list[0].name
+  if (!tgTarget) return null
+  if (!(await tmux.has(tgTarget))) { tgTarget = null; return null }
+  return tgTarget
+}
+
+function noTargetHint(token, chatId) {
+  const msg = drivableSessions().length
+    ? 'No target selected. Send /sessions then <code>/use &lt;n&gt;</code>.'
+    : 'No drivable sessions. Launch one from the oversee app first.'
+  return sendTelegram(token, chatId, msg).catch(() => {})
+}
+
+// Trim trailing blank lines, keep the last n, cap length for Telegram.
+function tail(text, n) {
+  const out = String(text).replace(/\s+$/, '').split('\n').slice(-n).join('\n')
+  return out.length > 3500 ? '…' + out.slice(-3500) : out
+}
+
+// Reply with a snapshot of the pane a moment after acting, so you see the result.
+// Skipped when a live /follow view of the same pane is already updating.
+function peekReply(token, chatId, name, delay = 2500) {
+  if (tgFollow && tgFollow.name === name) return
+  setTimeout(async () => {
+    const body = tail(await tmux.capturePlain(name), 30)
+    if (body) sendTelegram(token, chatId, `<pre>${esc(body)}</pre>`).catch(() => {})
+  }, delay)
+}
+
+// ---- live follow: stream a pane by editing one message in place --------------
+function followView(cwdName, body) {
+  return `📺 <b>${esc(cwdName)}</b>\n<pre>${esc(body || '(blank screen)')}</pre>`
+}
+
+function stopFollow(note) {
+  if (!tgFollow) return
+  clearInterval(tgFollow.timer)
+  const { chatId } = tgFollow
+  tgFollow = null
+  if (note) sendTelegram(settings.telegram.token, chatId, note).catch(() => {})
+}
+
+async function startFollow(token, chatId, name, cwdName) {
+  stopFollow()
+  const body = tail(await tmux.capturePlain(name), 30)
+  const sent = await sendTelegram(token, chatId, followView(cwdName, body))
+  if (!sent.ok || !sent.messageId) return sendTelegram(token, chatId, 'Could not start following.').catch(() => {})
+  tgFollow = { name, chatId, messageId: sent.messageId, cwdName, lastText: body, timer: null }
+  tgFollow.timer = setInterval(() => followTick().catch(() => {}), FOLLOW_MS)
+}
+
+// Poll the followed pane; edit the live message only when its content changed.
+async function followTick() {
+  if (!tgFollow) return
+  const { name, chatId, messageId, cwdName } = tgFollow
+  if (!(await tmux.has(name))) return stopFollow(`📺 <b>${esc(cwdName)}</b> ended — stopped following.`)
+  const body = tail(await tmux.capturePlain(name), 30)
+  if (body === tgFollow.lastText) return
+  tgFollow.lastText = body
+  editMessage(settings.telegram.token, chatId, messageId, followView(cwdName, body)).catch(() => {})
+}
+
+// Type text into the current target and schedule a snapshot.
+async function driveText(token, chatId, text) {
+  const name = await resolveTarget()
+  if (!name) return noTargetHint(token, chatId)
+  await tmux.sendPrompt(name, text)
+  peekReply(token, chatId, name)
+}
+
+// Voice note → local transcription → drive the target.
+async function handleVoice(voice, token, chatId, reply) {
+  const v = voiceInfo()
+  if (!v.available) return reply('🎤 Voice needs a local transcriber. Install <code>openai-whisper</code> (or whisper.cpp) — see the README.')
+  if (voice.duration && voice.duration > 120) return reply('🎤 That voice note is too long (max ~2 min).')
+  if (!(await resolveTarget())) return noTargetHint(token, chatId)
+  sendChatAction(token, chatId, 'typing')
+  await reply('🎤 transcribing…')
+  const f = await getFile(token, voice.file_id)
+  if (!f.ok) return reply('Could not fetch the voice note.')
+  const dest = path.join(os.tmpdir(), 'mc-voice', `dl-${voice.file_unique_id || Date.now()}.oga`)
+  await fsp.mkdir(path.dirname(dest), { recursive: true }).catch(() => {})
+  const dl = await downloadFile(token, f.filePath, dest)
+  if (!dl.ok) return reply('Could not download the voice note.')
+  const tr = await transcribe(dest)
+  fsp.rm(dest, { force: true }).catch(() => {})
+  if (!tr.ok || !tr.text) return reply(`Transcription failed${tr.error ? `: <code>${esc(tr.error)}</code>` : '.'}`)
+  await reply(`🎤 <i>${esc(tr.text)}</i>`)
+  const target = await resolveTarget() // may have died mid-transcription
+  if (!target) return noTargetHint(token, chatId)
+  await tmux.sendPrompt(target, tr.text)
+  peekReply(token, chatId, target)
+}
+
+async function handleTgMessage(msg) {
   const tg = settings.telegram
-  const text = (msg?.text || '').trim()
   const chatId = msg?.chat?.id
-  if (!text || chatId == null || String(chatId) !== String(tg.chatId)) return // only the linked chat
-  const reply = (t) => sendTelegram(tg.token, chatId, t).catch(() => {})
+  if (chatId == null || String(chatId) !== String(tg.chatId)) return // only the linked chat
+  const token = tg.token
+  const reply = (t) => sendTelegram(token, chatId, t).catch(() => {})
+
+  if (msg.voice) return handleVoice(msg.voice, token, chatId, reply)
+
+  const text = (msg.text || '').trim()
+  if (!text) return
+  if (!text.startsWith('/')) return driveText(token, chatId, text) // plain msg drives the terminal
+
   const sp = text.indexOf(' ')
   const cmd = (sp === -1 ? text : text.slice(0, sp)).toLowerCase().replace(/@.*$/, '')
   const arg = sp === -1 ? '' : text.slice(sp + 1).trim()
+
+  if (cmd === '/sessions') {
+    const list = (tgSessionList = drivableSessions())
+    if (!list.length) return reply('No drivable sessions. Launch one from the oversee app.')
+    const cur = await resolveTarget()
+    const lines = list.map((s, i) => `${s.name === cur ? '●' : `${i + 1}.`} ${esc(s.cwdName)} · ${s.state}`)
+    return reply('<b>Terminals</b>\n' + lines.join('\n') + '\n\nPick one: <code>/use &lt;n&gt;</code>')
+  }
+  if (cmd === '/use') {
+    const list = (tgSessionList = tgSessionList.length ? tgSessionList : drivableSessions())
+    if (!list.length) return reply('No drivable sessions yet.')
+    const n = Number(arg)
+    let pick = Number.isInteger(n) && n >= 1 && n <= list.length ? list[n - 1] : null
+    if (!pick && arg) pick = list.find((s) => s.cwdName.toLowerCase().includes(arg.toLowerCase()) || s.name.includes(arg))
+    if (!pick) return reply('Usage: <code>/use &lt;number&gt;</code> — see <code>/sessions</code>.')
+    tgTarget = pick.name
+    return reply(`Driving <b>${esc(pick.cwdName)}</b>. Send a message (or voice) and it types in.`)
+  }
+  if (cmd === '/peek') {
+    const name = await resolveTarget()
+    if (!name) return noTargetHint(token, chatId)
+    const body = tail(await tmux.capturePlain(name), 34)
+    return reply(body ? `<pre>${esc(body)}</pre>` : '(blank screen)')
+  }
+  if (cmd === '/follow') {
+    const list = (tgSessionList = tgSessionList.length ? tgSessionList : drivableSessions())
+    let name, cwdName
+    if (arg) {
+      const n = Number(arg)
+      const pick = Number.isInteger(n) && n >= 1 && n <= list.length
+        ? list[n - 1]
+        : list.find((s) => s.cwdName.toLowerCase().includes(arg.toLowerCase()) || s.name.includes(arg))
+      if (!pick) return reply('Usage: <code>/follow &lt;number&gt;</code> — see <code>/sessions</code>.')
+      tgTarget = name = pick.name
+      cwdName = pick.cwdName
+    } else {
+      name = await resolveTarget()
+      if (!name) return noTargetHint(token, chatId)
+      cwdName = drivableSessions().find((d) => d.name === name)?.cwdName || name
+    }
+    return startFollow(token, chatId, name, cwdName)
+  }
+  if (cmd === '/unfollow' || cmd === '/stop') {
+    if (!tgFollow) return reply('Not following anything.')
+    return stopFollow('📺 stopped following.')
+  }
+  if (TG_KEYMAP[cmd] || cmd === '/key') {
+    const key = TG_KEYMAP[cmd] || arg
+    const name = await resolveTarget()
+    if (!name) return noTargetHint(token, chatId)
+    if (!(await tmux.sendSpecial(name, key))) return reply(`Unknown key <code>${esc(key)}</code>.`)
+    return peekReply(token, chatId, name, 1200)
+  }
 
   if (cmd === '/task' || cmd === '/add') {
     if (!arg) return reply('Usage: <code>/task what to do</code>')
@@ -85,12 +280,17 @@ async function handleTgCommand(msg) {
     const s = latest.sessions || []
     const w = s.filter((x) => x.state === 'waiting').length
     const r = s.filter((x) => x.state === 'working').length
-    return reply(`<b>oversee</b>\n🔴 ${w} waiting · ▶️ ${r} running · ${s.length} session${s.length === 1 ? '' : 's'}`)
+    const cur = await resolveTarget()
+    const curName = cur ? drivableSessions().find((d) => d.name === cur)?.cwdName || cur : '—'
+    const v = voiceInfo()
+    const following = tgFollow ? `<b>${esc(tgFollow.cwdName)}</b>` : 'off'
+    return reply(
+      `<b>oversee</b>\n🔴 ${w} waiting · ▶️ ${r} running · ${s.length} session${s.length === 1 ? '' : 's'}` +
+      `\n🎛 driving: <b>${esc(curName)}</b>\n📺 following: ${following}\n🎤 voice: ${v.available ? esc(v.detail) : 'off (no whisper)'}`,
+    )
   }
-  if (cmd === '/help' || cmd === '/start') {
-    return reply('<b>oversee</b> — commands:\n<code>/task &lt;text&gt;</code>  add to inbox\n<code>/tasks</code>  list open tasks\n<code>/status</code>  fleet summary')
-  }
-  if (cmd.startsWith('/')) return reply('Unknown command. Try <code>/help</code>.')
+  if (cmd === '/help' || cmd === '/start') return reply(TG_HELP)
+  return reply('Unknown command. Try <code>/help</code>.')
 }
 
 async function telegramLoop() {
@@ -102,7 +302,7 @@ async function telegramLoop() {
     if (upd.ok) {
       for (const u of upd.result) {
         tgOffset = u.update_id + 1
-        try { await handleTgCommand(u.message || u.edited_message) } catch { /* ignore one bad update */ }
+        try { await handleTgMessage(u.message || u.edited_message) } catch { /* ignore one bad update */ }
       }
     } else {
       await sleep(3000) // back off on error (bad token, 409, network)
@@ -190,13 +390,58 @@ async function refresh(entries) {
   }
   latest = { sessions, tmuxAvailable: tmux.available, hubSessions: hub, overview, tasks, ts: now }
   broadcastControl({ type: 'snapshot', ...latest })
+
+  // Drop per-session state for sessions that have left the registry so the stores
+  // don't grow without bound over a long-running hub. (notifier ran above while
+  // titleBySession still held any just-vanished session, so titles aren't lost.)
+  const liveIds = new Set(sessions.map((s) => s.sessionId))
+  transcripts.retain(liveIds)
+  for (const sid of titleBySession.keys()) if (!liveIds.has(sid)) titleBySession.delete(sid)
+  notifier.retain(liveIds)
 }
 
-registry.on('change', (entries) => refresh(entries).catch((e) => console.error('refresh', e)))
+// Single-flight the refresh: it fires from the file watcher, a steady tick, and
+// launch/kill, and each run spawns child processes (tmux/ps) + awaits disk reads.
+// Without a guard, runs pile up faster than they finish under load — child-process
+// and buffer pileup that climbs until the heap OOMs. Coalesce instead: at most one
+// in flight, with a single trailing run if requests arrived while it was busy.
+let refreshing = false
+let refreshQueued = false
+function requestRefresh() {
+  if (refreshing) { refreshQueued = true; return }
+  refreshing = true
+  refresh(registry.entries)
+    .catch((e) => console.error('refresh', e))
+    .finally(() => {
+      refreshing = false
+      if (refreshQueued) { refreshQueued = false; requestRefresh() }
+    })
+}
+
+registry.on('change', () => requestRefresh())
 
 // Also refresh on a steady tick so token counts / activity update while a
 // session is mid-turn (its registry file heartbeats, but we want fresh content).
-setInterval(() => refresh(registry.entries).catch(() => {}), 1500)
+setInterval(requestRefresh, 1500)
+
+// Memory watchdog. --max-old-space-size caps the V8 heap, but native allocations
+// (child-process stdout buffers, sockets) can still climb. As a last-resort guard
+// against starving the whole machine, sample RSS and exit cleanly past a hard
+// ceiling — far better than dragging macOS into swap. The Electron shell restarts
+// us and surfaces the reason; a terminal `npm start` prints it and stops.
+const RSS_WARN = 700 * 1024 * 1024
+const RSS_LIMIT = 1500 * 1024 * 1024
+const memWatch = setInterval(() => {
+  const mb = (n) => (n / 1048576) | 0
+  const { rss } = process.memoryUsage()
+  if (rss > RSS_LIMIT) {
+    console.error(`[oversee] RSS ${mb(rss)} MB over limit — exiting to protect the system.`)
+    process.exit(137)
+  } else if (rss > RSS_WARN) {
+    console.warn(`[oversee] high memory: RSS ${mb(rss)} MB`)
+  }
+}, 10_000)
+memWatch.unref?.()
 
 // ---- HTTP: static UI + JSON API ---------------------------------------------
 const server = http.createServer(async (req, res) => {
@@ -243,7 +488,7 @@ async function handleApi(req, res, url) {
       if (!cwd) return json(res, { error: 'cwd required' }, 400)
       if (!tmux.available) return json(res, { error: 'tmux not available' }, 400)
       const info = await tmux.launch(cwd, body.cols || 120, body.rows || 32)
-      refresh(registry.entries).catch(() => {})
+      requestRefresh()
       return json(res, { ok: true, ...info })
     }
 
@@ -416,12 +661,12 @@ async function killSession({ tmuxName, pid, dead } = {}) {
             if (!pidAlive(n)) return
             try { process.kill(n, 'SIGKILL') } catch { /* gone */ }
             fsp.rm(path.join(config.sessionsDir, `${n}.json`), { force: true }).catch(() => {})
-            refresh(registry.entries).catch(() => {})
+            requestRefresh()
           }, delay)
         }
       }
     }
-    setTimeout(() => refresh(registry.entries).catch(() => {}), 300)
+    setTimeout(requestRefresh, 300)
     return { ok: true }
   } catch (e) {
     return { ok: false, error: String(e?.message || e) }
@@ -588,18 +833,26 @@ async function main() {
   await tmux.init()
   await loadTasks()
   await loadSettings()
+  const voice = await detectVoiceBackend() // local whisper for Telegram voice notes
   telegramLoop() // long-poll for Telegram commands (idles until enabled)
   await registry.start()
   // When launched by the Electron shell (MC_EPHEMERAL), bind an OS-assigned port
-  // on loopback and report it back to the parent — avoids fixed-port conflicts and
-  // keeps the app off the LAN. Standalone `npm start` still uses config.port (4600).
+  // and report it back to the parent — avoids fixed-port conflicts. Standalone
+  // `npm start` uses config.port (4600).
   const port = process.env.MC_EPHEMERAL ? 0 : config.port
-  const host = process.env.MC_EPHEMERAL ? '127.0.0.1' : undefined
+  // Bind to loopback by default: the hub can launch/drive terminals and read every
+  // transcript with no auth, so it must NOT be reachable from the LAN unless the
+  // user explicitly opts in with MC_HOST=0.0.0.0 (e.g. to reach it from a phone on
+  // the same network — do that only on a trusted network).
+  const host = process.env.MC_HOST || '127.0.0.1'
+  const exposed = host !== '127.0.0.1' && host !== 'localhost'
   server.listen(port, host, () => {
     const actual = server.address().port
     console.log(`\n  ▸ oversee.sh server on http://localhost:${actual}`)
+    if (exposed) console.log(`    ⚠ bound to ${host} — reachable on your network, and it has no auth`)
     console.log(`    tmux: ${tmux.available ? 'available (can launch sessions)' : 'NOT found — monitor-only mode'}`)
-    console.log(`    UI:   ${fs.existsSync(distDir) ? 'built (open the URL above)' : 'run `npm run dev` for the dev UI on :5173'}\n`)
+    console.log(`    voice: ${voice.available ? voice.detail : 'no whisper — Telegram voice notes disabled'}`)
+    console.log(`    UI:   ${fs.existsSync(distDir) ? 'built (open the URL above)' : 'run `npm run dev` for the dev UI on :5180'}\n`)
     process.parentPort?.postMessage({ type: 'ready', port: actual })
   })
 }
