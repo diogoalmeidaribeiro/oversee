@@ -2,8 +2,8 @@ import { Logo } from '../src/components/Logo.jsx'
 import { HeroMock } from './HeroMock.jsx'
 import { HeroShader } from './HeroShader.jsx'
 
-const REPO = 'https://gitlab.com/ianaspme/oversee.sh'
-const DOWNLOAD = REPO + '/-/releases'
+const REPO = 'https://github.com/diogoalmeidaribeiro/oversee'
+const DOWNLOAD = REPO + '/releases'
 
 function Brackets() {
   return (
@@ -167,7 +167,7 @@ export function Landing() {
         <div className="foot-brand"><Logo connected size={18} /><span className="brand-name">oversee</span></div>
         <span className="foot-mid">built for Claude Code</span>
         <div className="foot-links">
-          <a href={REPO}>GitLab</a>
+          <a href={REPO}>GitHub</a>
           <span>© 2026</span>
         </div>
       </footer>
