@@ -191,6 +191,25 @@ a { color: inherit; text-decoration: none; }
 /* transparent nav — float over the hero, no glass bar */
 .nav { background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none; border-bottom: none; }
 
+/* "beta" badge on the nav logo */
+.nav-brand .brand-name::after {
+  content: "beta";
+  margin-left: 7px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: .6px;
+  text-transform: uppercase;
+  color: var(--run);
+  border: 1px solid color-mix(in srgb, var(--run) 45%, transparent);
+  background: color-mix(in srgb, var(--run) 12%, transparent);
+  border-radius: 999px;
+  padding: 2px 6px;
+  vertical-align: middle;
+  position: relative;
+  top: -1px;
+}
+
 /* indigo depth on the final CTA panel */
 .final { border-color: rgba(139,124,246,.24) !important; box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 0 0 1px rgba(124,93,250,.1), 0 40px 120px rgba(0,0,0,.6), 0 0 90px rgba(124,93,250,.12); }
 
