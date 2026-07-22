@@ -80,7 +80,11 @@ function createWindow(port) {
     minHeight: 560,
     title: 'oversee.sh',
     backgroundColor: '#0a0a0a',
-    webPreferences: { contextIsolation: true, nodeIntegration: false },
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+      preload: path.join(__dirname, 'preload.cjs'),
+    },
   })
   const url = process.env.MC_DEV ? 'http://localhost:5180' : `http://127.0.0.1:${port}`
   win.loadURL(url)
